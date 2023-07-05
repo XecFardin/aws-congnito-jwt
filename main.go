@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/big"
@@ -49,13 +50,18 @@ type JWK struct {
 // ParseJWT parses and validates the JWT token.
 func (a *Auth) ParseJWT(tokenString string) (*jwt.Token, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		var key *rsa.PublicKey
+		kid, ok := token.Header["kid"].(string)
+		if !ok {
+			return nil, errors.New("Invalid token kid")
+		}
+
 		for _, k := range a.jwk.Keys {
-			if k.Kid == token.Header["kid"] {
-				key = k.Key
+			if k.Kid == kid {
+				return k.Key, nil
 			}
 		}
-		return key, nil
+
+		return nil, fmt.Errorf("Key not found for kid: %s", kid)
 	})
 	if err != nil {
 		return token, err
@@ -76,7 +82,7 @@ func (a *Auth) JWKURL() string {
 // FetchAWSKeys fetches the AWS keys for Cognito.
 func FetchAWSKeys(cognitoRegion, cognitoPoolID string) (*Auth, error) {
 	a := &Auth{
-		cognitoRegion:     cognitoPoolID,
+		cognitoRegion:     cognitoRegion,
 		cognitoUserPoolID: cognitoPoolID,
 	}
 	a.jwkURL = fmt.Sprintf("https://cognito-idp.%s.amazonaws.com/%s/.well-known/jwks.json", a.cognitoRegion, a.cognitoUserPoolID)
@@ -92,26 +98,23 @@ func FetchAWSKeys(cognitoRegion, cognitoPoolID string) (*Auth, error) {
 
 // CacheJWK caches the JWK from the URL.
 func (a *Auth) CacheJWK() error {
-	req, err := http.NewRequest("GET", a.jwkURL, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Add("Accept", "application/json")
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.Get(a.jwkURL)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
+
 	jwk := new(JWK)
 	err = json.Unmarshal(body, jwk)
 	if err != nil {
 		return err
 	}
+
 	a.jwk = jwk
 	return nil
 }
